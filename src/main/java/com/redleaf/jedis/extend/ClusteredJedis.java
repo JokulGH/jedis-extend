@@ -3,6 +3,7 @@ package com.redleaf.jedis.extend;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisCluster;
+import redis.clients.jedis.JedisSlotBasedConnectionHandler;
 
 import java.util.Set;
 
@@ -78,9 +79,8 @@ public class ClusteredJedis extends JedisCluster {
         super(jedisClusterNode, connectionTimeout, soTimeout, maxAttempts, password, poolConfig);
     }
 
-//    public Pipeline pipelined() {
-//        pipeline = new Pipeline();
-//        pipeline.setClient(client);
-//        return pipeline;
-//    }
+    public ClusteredJedisPipeline pipelined() {
+        ClusteredJedisPipeline pipeline = new ClusteredJedisPipeline((JedisSlotBasedConnectionHandler) this.connectionHandler);
+        return pipeline;
+    }
 }
