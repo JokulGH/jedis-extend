@@ -3,6 +3,7 @@ package com.redleaf.jedis.extend;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.*;
+import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.util.JedisClusterCRC16;
 import redis.clients.util.SafeEncoder;
 
@@ -12,7 +13,7 @@ import java.lang.reflect.Field;
 import java.util.*;
 
 /**
- * 基于redis集群构建的pipeline操作，支持串行IO和并行IO两种操作模式<br/>
+ * 基于redis集群构建的pipeline操作，只支持串行IO操作模式<br/>
  * email:taojing.huang@qq.com <br/>
  * Created by Jokul on 2018/1/18.
  */
@@ -25,7 +26,6 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
     private JedisClusterInfoCache clusterInfoCache;
     private Queue<Client> clients = new LinkedList<Client>();
     private Map<JedisPool, Jedis> jedisCache = new HashMap<JedisPool, Jedis>();
-    private Map<Client, Queue<Response<?>>> clientQueueMap; //保存每个客户端对应的返回值队列
 
     public ClusteredJedisPipeline(JedisSlotBasedConnectionHandler connectionHandler){
         this.connectionHandler = connectionHandler;
@@ -33,28 +33,18 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
     }
 
     /**
-     * Syncronize pipeline by reading all responses. This operation closes the pipeline. In order to
-     * get return values from pipelined commands, capture the different Response&lt;?&gt; of the
-     * commands you execute.
+     * 执行pipeline中的命令
      */
     public void sync() {
-        for (Client client : clients) {
-            generateResponse(client.getOne());
-        }
+        innerSyncAndReturnAll(false);
     }
 
     /**
-     * Syncronize pipeline by reading all responses. This operation closes the pipeline. Whenever
-     * possible try to avoid using this version and use ShardedJedisPipeline.sync() as it won't go
-     * through all the responses and generate the right response type (usually it is a waste of time).
-     * @return A list of all the responses in the order you executed them.
+     * 执行pipeline中的命令并获取返回值
+     * @return 返回各命令的结果列表
      */
     public List<Object> syncAndReturnAll() {
-        List<Object> formatted = new ArrayList<Object>();
-        for (Client client : clients) {
-            formatted.add(generateResponse(client.getOne()).get());
-        }
-        return formatted;
+        return innerSyncAndReturnAll(true);
     }
 
     /**
@@ -65,7 +55,26 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
      * @throws IOException if an I/O error occurs
      */
     public void close() throws IOException {
+        sync();
+    }
 
+    protected List<Object> innerSyncAndReturnAll(boolean needResult){
+
+        List<Object> formatted = new ArrayList<Object>();
+        Object result = null;
+        for (Client client : clients) { //获取返回结果
+            try {
+                result = generateResponse(client.getOne()).get();
+            } catch (JedisDataException e) {
+                result = e;
+            }
+
+            if (needResult){
+                formatted.add(result);
+            }
+        }
+
+        return formatted;
     }
 
     @Override
@@ -81,15 +90,6 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
         Client client = jedis.getClient();
         clients.add(client);
         return client;
-    }
-
-    @Override
-    protected <T> Response<T> getResponse(Builder<T> builder) {
-        if (clientQueueMap == null || clientQueueMap.isEmpty()){
-            clientQueueMap = new HashMap<Client, Queue<Response<?>>>();
-        }
-//        clientQueueMap.get(get)
-        return super.getResponse(builder);
     }
 
     /**
@@ -126,6 +126,7 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
         Jedis jedis = jedisCache.get(pool);
         if (jedis == null){
             jedis = pool.getResource();
+            jedisCache.put(pool, jedis);
         }
 
         return jedis;
