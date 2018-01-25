@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.*;
 import redis.clients.jedis.exceptions.JedisDataException;
+import redis.clients.jedis.exceptions.JedisMovedDataException;
 import redis.clients.util.JedisClusterCRC16;
 import redis.clients.util.SafeEncoder;
 
@@ -41,7 +42,7 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
 
     /**
      * 执行pipeline中的命令并获取返回值
-     * @return 返回各命令的结果列表
+     * @return 返回各命令的结果列表，包含出错信息，便于外层做错误处理
      */
     public List<Object> syncAndReturnAll() {
         return innerSyncAndReturnAll(true);
@@ -55,25 +56,57 @@ public class ClusteredJedisPipeline extends PipelineBase implements Closeable {
      * @throws IOException if an I/O error occurs
      */
     public void close() throws IOException {
-        sync();
+        clean();
+
+        clients.clear();
+
+        for (Jedis jedis : jedisCache.values()) {
+            jedis.getClient().getAll();
+            jedis.close();
+        }
+
+        jedisCache.clear();
     }
 
     protected List<Object> innerSyncAndReturnAll(boolean needResult){
 
         List<Object> formatted = new ArrayList<Object>();
         Object result = null;
-        for (Client client : clients) { //获取返回结果
-            try {
-                result = generateResponse(client.getOne()).get();
-            } catch (JedisDataException e) {
-                result = e;
+        boolean moved = false;
+
+        try {
+
+            for (Client client : clients) { //获取返回结果
+                try {
+                    result = generateResponse(client.getOne()).get();
+                } catch (JedisDataException e) {
+                    result = e;
+                    if (e instanceof JedisMovedDataException){
+                        moved = true;
+                    }
+                }catch (Exception e){
+                    logger.error("count=", e);
+                }
+
+                if (needResult){
+                    formatted.add(result);
+                }
             }
 
-            if (needResult){
-                formatted.add(result);
+            //存在重定向，刷新slots缓存
+            if (moved){
+                connectionHandler.renewSlotCache();
+            }
+
+        }catch (Exception e){
+            e.printStackTrace();
+        }finally {
+            try {
+                close();
+            } catch (IOException e) {
+                e.printStackTrace();
             }
         }
-
         return formatted;
     }
 
